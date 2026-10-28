@@ -35,6 +35,13 @@ function App() {
 
   const loadDashboard = async () => {
     try {
+      const status = await request('/admin/status');
+      const missing = [...(status.missingTables || []), ...(status.missingColumns || [])];
+      if (missing.length) {
+        setConnected(false);
+        setNotice({ text: `Baza nije ažurirana – pokrenite api/database/schema.sql. Nedostaje: ${missing.join(', ')}`, success: false });
+        return;
+      }
       const [serviceData, workflowData, runData] = await Promise.all([
         request('/admin/services'), request('/admin/workflows'), request('/admin/workflow-runs'),
       ]);
@@ -117,9 +124,9 @@ function App() {
     setRunning(true);
     setRunResult(null);
     try {
-      const imageBase64 = await readAsBase64(testImage);
+      const imageBase64 = await resizeToJpegBase64(testImage);
       const result = await request('/admin/workflow-runs', {
-        method: 'POST', body: JSON.stringify({ imageBase64, mimeType: testImage.type || 'image/jpeg', imageUri: testImage.name }),
+        method: 'POST', body: JSON.stringify({ imageBase64, mimeType: 'image/jpeg', imageUri: testImage.name }),
       });
       setRunResult({ success: true, result });
       await loadRuns();
@@ -191,12 +198,24 @@ function describeResult(result) {
   if (result.workflowOutcome === 'needs_new_photo') return `Agent traži novu fotografiju: ${result.message}`;
   return `${result.plantName} (${Math.round((result.confidence || 0) * 100)}%) · ${result.tasks?.length || 0} zadataka · ${result.workflowMode} · ${result.workflowOutcome}`;
 }
-function readAsBase64(file) {
+// Fotografije s diska mogu imati više MB; smanjuju se na najviše 1600 px (JPEG) kako bi zahtjev ostao malen,
+// slično kao u mobilnoj aplikaciji koja šalje već komprimiranu sliku.
+const MAX_IMAGE_SIDE = 1600;
+function resizeToJpegBase64(file) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.onerror = () => reject(new Error('Fotografiju nije moguće pročitati.'));
-    reader.readAsDataURL(file);
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(image.width, image.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(image.width * scale);
+      canvas.height = Math.round(image.height * scale);
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.85).split(',')[1] || '');
+    };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Fotografiju nije moguće pročitati.')); };
+    image.src = url;
   });
 }
 
